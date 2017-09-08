@@ -1,0 +1,15 @@
+[prune]
+  go-tests = true
+  unused-packages = true
+
+[[constraint]]
+  name = "github.com/hashicorp/vault"
+  version = "0.8.2"
+
+[[constraint]]
+  name = "github.com/mgutz/logxi"
+  version = "1.0.0"
+
+[[constraint]]
+  name = "gopkg.in/alecthomas/kingpin.v2"
+  version = "2.2.5"
