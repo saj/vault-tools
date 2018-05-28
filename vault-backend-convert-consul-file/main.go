@@ -26,19 +26,15 @@ func main() {
 		"Local filesystem path to the output directory.  This directory will be created if it does not exist.").
 		Required().String()
 
-	die := func(err error) {
-		app.Fatalf("%v", err)
-	}
-
 	kingpin.MustParse(app.Parse(os.Args[1:]))
 
 	c, err := NewConverter(*inputPath, *outputPath)
 	if err != nil {
-		die(err)
+		app.Fatalf("%v", err)
 	}
 	defer c.Close() // nolint: errcheck
 	if err := c.ConvertAll(); err != nil {
-		die(err)
+		app.Fatalf("%v", err)
 	}
 }
 
@@ -51,11 +47,18 @@ type Converter struct {
 }
 
 func NewConverter(inputPath, outputPath string) (*Converter, error) {
+	basePath := filepath.Clean(outputPath)
+	if err := os.MkdirAll(basePath, 0700); err != nil {
+		return nil, err
+	}
+	if err := os.Chmod(basePath, 0700); err != nil {
+		return nil, err
+	}
+
 	f, err := os.OpenFile(inputPath, os.O_RDONLY, 0)
 	if err != nil {
 		return nil, err
 	}
-
 	d := json.NewDecoder(f)
 	t, err := d.Token()
 	if err != nil {
@@ -65,16 +68,6 @@ func NewConverter(inputPath, outputPath string) (*Converter, error) {
 	if t != json.Delim('[') {
 		f.Close() // nolint: errcheck
 		return nil, fmt.Errorf("expected JSON token: '[', got: %s", t)
-	}
-
-	basePath := filepath.Clean(outputPath)
-	if err := os.MkdirAll(basePath, 0700); err != nil {
-		f.Close() // nolint: errcheck
-		return nil, err
-	}
-	if err := os.Chmod(basePath, 0700); err != nil {
-		f.Close() // nolint: errcheck
-		return nil, err
 	}
 
 	return &Converter{
