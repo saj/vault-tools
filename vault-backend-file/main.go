@@ -18,7 +18,7 @@ import (
 func main() {
 	var (
 		app = kingpin.New("vault-backend-file",
-			"Provides unfettered read access to a Vault file backend secured with an AES-GCM barrier.").
+			"Read data from a Vault file backend secured with an AES-GCM barrier.").
 			UsageTemplate(kingpin.CompactUsageTemplate)
 		path = app.Flag("backend-path",
 			"Local filesystem path to the Vault file backend root directory.").
