@@ -1,10 +1,8 @@
 package util
 
 import (
-	"encoding/base64"
 	"errors"
 	"os"
-	"strings"
 
 	"golang.org/x/crypto/ssh/terminal"
 )
@@ -53,14 +51,8 @@ func (t *Terminal) ReadKeyBase64(prompt string) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	kb64 := []byte(strings.TrimSpace(line))
-	l := base64.StdEncoding.DecodedLen(len(kb64))
-	k := make([]byte, l)
-	n, err := base64.StdEncoding.Decode(k, kb64)
-	if err != nil {
-		return nil, err
-	}
-	return k[0:n], nil
+
+	return DecodeKeyBase64String(line)
 }
 
 func findTerminal() (*os.File, error) {
