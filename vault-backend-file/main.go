@@ -28,29 +28,25 @@ func main() {
 		getVerbatim   = get.Flag("verbatim", "Omit hexdump; write data byte-for-byte to standard output.").Bool()
 	)
 
-	die := func(err error) {
-		app.Fatalf("%v", err)
-	}
-
 	cmd := kingpin.MustParse(app.Parse(os.Args[1:]))
 
 	masterKey, err := promptForMasterKey()
 	if err != nil {
-		die(err)
+		app.Fatalf("%v", err)
 	}
 	barrier, err := newBarrier(*path)
 	if err != nil {
-		die(err)
+		app.Fatalf("%v", err)
 	}
 	if err := barrier.Unseal(masterKey); err != nil {
-		die(err)
+		app.Fatalf("%v", err)
 	}
 
 	switch cmd {
 	case list.FullCommand():
 		keys, err := barrier.List(*listPrefix)
 		if err != nil {
-			die(err)
+			app.Fatalf("%v", err)
 		}
 		for i := range keys {
 			fmt.Println(keys[i])
@@ -59,16 +55,16 @@ func main() {
 	case get.FullCommand():
 		entry, err := barrier.Get(*getKey)
 		if err != nil {
-			die(err)
+			app.Fatalf("%v", err)
 		}
 		if entry == nil {
-			die(fmt.Errorf("no value at %s", *getKey))
+			app.Fatalf("no value at %s", *getKey)
 		}
 		d := entry.Value
 		if *getDecompress {
 			decompressed, notComp, compErr := compressutil.Decompress(d)
 			if err != nil {
-				die(compErr)
+				app.Fatalf("%v", compErr)
 			}
 			if !notComp {
 				d = decompressed
