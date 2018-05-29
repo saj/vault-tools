@@ -103,6 +103,15 @@
   revision = "e80d13ce29ede4452c43dea11e79b9bc8a15b478"
 
 [[projects]]
+  name = "github.com/hashicorp/consul"
+  packages = [
+    "api",
+    "command/kv/impexp"
+  ]
+  revision = "5174058f0d2bda63fa5198ab96c33d9a909c58ed"
+  version = "v1.1.0"
+
+[[projects]]
   branch = "master"
   name = "github.com/hashicorp/errwrap"
   packages = ["."]
@@ -166,6 +175,12 @@
     "json/token"
   ]
   revision = "8f6b1344a92ff8877cf24a5de9177bf7d0a2a187"
+
+[[projects]]
+  name = "github.com/hashicorp/serf"
+  packages = ["coordinate"]
+  revision = "d6574a5bb1226678d7010325fb6c985db20ee458"
+  version = "v0.8.1"
 
 [[projects]]
   name = "github.com/hashicorp/vault"
@@ -418,6 +433,6 @@
 [solve-meta]
   analyzer-name = "dep"
   analyzer-version = 1
-  inputs-digest = "e039b1dffc5ed1f56f0f793d80f635e88502af7414fb2fbeaf40f7c91de55802"
+  inputs-digest = "f218407d859ec2308e6182d2decd4e9150b402414b89c32d3c1e271957fa6465"
   solver-name = "gps-cdcl"
   solver-version = 1

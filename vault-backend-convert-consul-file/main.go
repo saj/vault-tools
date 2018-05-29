@@ -1,14 +1,17 @@
 package main
 
 import (
+	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
 	"path"
 	"path/filepath"
 
-	"github.com/hashicorp/vault/physical"
+	consul "github.com/hashicorp/consul/command/kv/impexp"
+	vault "github.com/hashicorp/vault/physical"
 	kingpin "gopkg.in/alecthomas/kingpin.v2"
 )
 
@@ -96,43 +99,36 @@ func (c *Converter) Convert() bool {
 	}
 	c.count++
 
-	var entry physical.Entry
-
-	if err := c.decoder.Decode(&entry); err != nil {
+	consulEntry := &consul.Entry{}
+	if err := c.decoder.Decode(consulEntry); err != nil {
 		c.setErr(fmt.Errorf("entry %d: %s", c.count, err))
 		return false
 	}
-	// Sanity check.
-	if len(entry.Key) == 0 {
-		c.setErr(fmt.Errorf("entry %d: key was empty", c.count))
-		return false
-	}
-	if len(entry.Value) == 0 {
-		c.setErr(fmt.Errorf("entry %d: value was empty", c.count))
-		return false
-	}
 
-	kDir, kBase := path.Split(entry.Key)
-	p := filepath.Join(c.outputRootPath, kDir, "_"+kBase)
-	d := filepath.Dir(p)
-	if d != "." {
-		if err := os.MkdirAll(d, 0700); err != nil {
-			c.setErr(err)
-			return false
-		}
-	}
-
-	f, err := os.OpenFile(p, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0600)
+	vaultEntry, err := convertEntry(consulEntry)
 	if err != nil {
-		c.setErr(err)
+		c.setErr(fmt.Errorf("entry %d: %v", c.count, err))
+		return false
+	}
+
+	if err := sanityCheckEntry(vaultEntry); err != nil {
+		c.setErr(fmt.Errorf("entry %d: %v", c.count, err))
+		return false
+	}
+
+	f, err := openFile(c.outputRootPath, vaultEntry.Key)
+	if err != nil {
+		c.setErr(fmt.Errorf("entry %d: %v", c.count, err))
 		return false
 	}
 	defer f.Close()
+
 	enc := json.NewEncoder(f)
-	if err := enc.Encode(&entry); err != nil {
-		c.setErr(err)
+	if err := enc.Encode(vaultEntry); err != nil {
+		c.setErr(fmt.Errorf("entry %d: %v", c.count, err))
 		return false
 	}
+
 	return true
 }
 
@@ -144,4 +140,40 @@ func (c *Converter) setErr(err error) {
 	if c.firstErr == nil {
 		c.firstErr = err
 	}
+}
+
+func openFile(root, key string) (*os.File, error) {
+	kdir, kbase := path.Split(key)
+	// Vault's file backend expects files to be named with a leading underscore.
+	p := filepath.Join(root, kdir, "_"+kbase)
+	if err := os.MkdirAll(filepath.Dir(p), 0700); err != nil {
+		return nil, err
+	}
+	f, err := os.OpenFile(p, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0600)
+	if err != nil {
+		return nil, err
+	}
+	return f, nil
+}
+
+func sanityCheckEntry(entry *vault.Entry) error {
+	if len(entry.Key) == 0 {
+		return errors.New("key is empty")
+	}
+	if len(entry.Value) == 0 {
+		return errors.New("value is empty")
+	}
+	return nil
+}
+
+func convertEntry(entry *consul.Entry) (*vault.Entry, error) {
+	d, err := base64.StdEncoding.DecodeString(entry.Value)
+	if err != nil {
+		return nil, err
+	}
+
+	return &vault.Entry{
+		Key:   entry.Key,
+		Value: d,
+	}, nil
 }
