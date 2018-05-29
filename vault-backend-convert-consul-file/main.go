@@ -14,16 +14,18 @@ import (
 
 func main() {
 	app := kingpin.New("vault-backend-convert-consul-file",
-		"Convert Vault data from Consul K/V format to file format.  The resulting directory may be loaded in to Vault's file backend.\n\n"+
+		"Convert Vault data from Consul KV format to file format.\n\n"+
+			"Input must be a JSON-serialised Consul KV tree.  Consul will output KV data in this format with 'consul kv export'.\n\n"+
+			"Output will be a filesystem tree.  The root of this tree may be loaded into Vault's file backend.\n\n"+
 			"Example:\n\n"+
 			"    consul kv export vault >vault.json\n"+
-			"    vault-backend-convert-consul-file vault.json /tmp/vault\n").
+			"    vault-backend-convert-consul-file vault.json backend\n").
 		UsageTemplate(kingpin.CompactUsageTemplate)
-	inputPath := app.Arg("consul-kv",
-		"Local filesystem path to an existing JSON-serialised Consul K/V export.").
+	inputPath := app.Arg("consul-input",
+		"Local filesystem path to an existing file that contains a JSON-serialised Consul KV export.").
 		Required().String()
-	outputPath := app.Arg("output-directory",
-		"Local filesystem path to the output directory.  This directory will be created if it does not exist.").
+	outputPath := app.Arg("file-output",
+		"Local filesystem path to the output directory.  The directory will be created if it does not exist.").
 		Required().String()
 
 	kingpin.MustParse(app.Parse(os.Args[1:]))
@@ -39,26 +41,27 @@ func main() {
 }
 
 type Converter struct {
-	basePath string
-	f        io.ReadCloser
-	decoder  *json.Decoder
-	count    uint64
-	firstErr error
+	input          io.ReadCloser
+	outputRootPath string
+	decoder        *json.Decoder
+	count          uint64
+	firstErr       error
 }
 
 func NewConverter(inputPath, outputPath string) (*Converter, error) {
-	basePath := filepath.Clean(outputPath)
-	if err := os.MkdirAll(basePath, 0700); err != nil {
+	p := filepath.Clean(outputPath)
+	if err := os.MkdirAll(p, 0700); err != nil {
 		return nil, err
 	}
-	if err := os.Chmod(basePath, 0700); err != nil {
+	if err := os.Chmod(p, 0700); err != nil {
 		return nil, err
 	}
 
-	f, err := os.OpenFile(inputPath, os.O_RDONLY, 0)
+	f, err := os.Open(inputPath)
 	if err != nil {
 		return nil, err
 	}
+
 	d := json.NewDecoder(f)
 	t, err := d.Token()
 	if err != nil {
@@ -71,14 +74,14 @@ func NewConverter(inputPath, outputPath string) (*Converter, error) {
 	}
 
 	return &Converter{
-		basePath: basePath,
-		f:        f,
-		decoder:  d,
+		input:          f,
+		outputRootPath: p,
+		decoder:        d,
 	}, nil
 }
 
 func (c *Converter) Close() error {
-	return c.f.Close()
+	return c.input.Close()
 }
 
 func (c *Converter) ConvertAll() error {
@@ -110,7 +113,7 @@ func (c *Converter) Convert() bool {
 	}
 
 	kDir, kBase := path.Split(entry.Key)
-	p := filepath.Join(c.basePath, kDir, "_"+kBase)
+	p := filepath.Join(c.outputRootPath, kDir, "_"+kBase)
 	d := filepath.Dir(p)
 	if d != "." {
 		if err := os.MkdirAll(d, 0700); err != nil {
@@ -119,7 +122,7 @@ func (c *Converter) Convert() bool {
 		}
 	}
 
-	f, err := os.OpenFile(p, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0600)
+	f, err := os.OpenFile(p, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0600)
 	if err != nil {
 		c.setErr(err)
 		return false
