@@ -3,12 +3,12 @@ package main
 import (
 	"encoding/base64"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"os"
 	"path"
 	"path/filepath"
+	"strings"
 
 	consul "github.com/hashicorp/consul/command/kv/impexp"
 	vault "github.com/hashicorp/vault/physical"
@@ -24,6 +24,9 @@ func main() {
 			"    consul kv export vault >vault.json\n"+
 			"    vault-backend-convert-consul-file vault.json backend\n").
 		UsageTemplate(kingpin.CompactUsageTemplate)
+	consulPath := app.Flag("consul-path",
+		"Consul key prefix for Vault data.  See https://www.vaultproject.io/docs/configuration/storage/consul.html#path").
+		Default("vault").String()
 	inputPath := app.Arg("consul-input",
 		"Local filesystem path to an existing file that contains a JSON-serialised Consul KV export.").
 		Required().String()
@@ -33,7 +36,7 @@ func main() {
 
 	kingpin.MustParse(app.Parse(os.Args[1:]))
 
-	c, err := NewConverter(*inputPath, *outputPath)
+	c, err := NewConverter(*inputPath, *outputPath, *consulPath)
 	if err != nil {
 		app.Fatalf("%v", err)
 	}
@@ -47,11 +50,17 @@ type Converter struct {
 	input          io.ReadCloser
 	outputRootPath string
 	decoder        *json.Decoder
+	keyPrefix      string
 	count          uint64
 	firstErr       error
 }
 
-func NewConverter(inputPath, outputPath string) (*Converter, error) {
+func NewConverter(inputPath, outputPath, consulPath string) (*Converter, error) {
+	keyPrefix := path.Clean(consulPath)
+	if keyPrefix == "/" || keyPrefix == "." {
+		return nil, fmt.Errorf("invalid Consul path: %v", consulPath)
+	}
+
 	p := filepath.Clean(outputPath)
 	if err := os.MkdirAll(p, 0700); err != nil {
 		return nil, err
@@ -80,6 +89,7 @@ func NewConverter(inputPath, outputPath string) (*Converter, error) {
 		input:          f,
 		outputRootPath: p,
 		decoder:        d,
+		keyPrefix:      keyPrefix,
 	}, nil
 }
 
@@ -101,31 +111,31 @@ func (c *Converter) Convert() bool {
 
 	consulEntry := &consul.Entry{}
 	if err := c.decoder.Decode(consulEntry); err != nil {
-		c.setErr(fmt.Errorf("entry %d: %s", c.count, err))
+		c.setErr(fmt.Errorf("input entry %d: %s", c.count, err))
 		return false
 	}
 
-	vaultEntry, err := convertEntry(consulEntry)
+	if !keyHasPrefix(consulEntry.Key, c.keyPrefix) {
+		// This data does not belong to Vault.  Skip silently.
+		return true
+	}
+
+	vaultEntry, err := convertEntry(consulEntry, c.keyPrefix)
 	if err != nil {
-		c.setErr(fmt.Errorf("entry %d: %v", c.count, err))
-		return false
-	}
-
-	if err := sanityCheckEntry(vaultEntry); err != nil {
-		c.setErr(fmt.Errorf("entry %d: %v", c.count, err))
+		c.setErr(fmt.Errorf("input entry %d: %v", c.count, err))
 		return false
 	}
 
 	f, err := openFile(c.outputRootPath, vaultEntry.Key)
 	if err != nil {
-		c.setErr(fmt.Errorf("entry %d: %v", c.count, err))
+		c.setErr(fmt.Errorf("input entry %d: %v", c.count, err))
 		return false
 	}
 	defer f.Close()
 
 	enc := json.NewEncoder(f)
 	if err := enc.Encode(vaultEntry); err != nil {
-		c.setErr(fmt.Errorf("entry %d: %v", c.count, err))
+		c.setErr(fmt.Errorf("input entry %d: %v", c.count, err))
 		return false
 	}
 
@@ -156,24 +166,42 @@ func openFile(root, key string) (*os.File, error) {
 	return f, nil
 }
 
-func sanityCheckEntry(entry *vault.Entry) error {
-	if len(entry.Key) == 0 {
-		return errors.New("key is empty")
-	}
-	if len(entry.Value) == 0 {
-		return errors.New("value is empty")
-	}
-	return nil
-}
-
-func convertEntry(entry *consul.Entry) (*vault.Entry, error) {
-	d, err := base64.StdEncoding.DecodeString(entry.Value)
+func convertEntry(entry *consul.Entry, keyPrefix string) (*vault.Entry, error) {
+	v, err := base64.StdEncoding.DecodeString(entry.Value)
 	if err != nil {
 		return nil, err
 	}
 
 	return &vault.Entry{
-		Key:   entry.Key,
-		Value: d,
+		Key:   keyStripPrefix(entry.Key, keyPrefix),
+		Value: v,
 	}, nil
+}
+
+func keyHasPrefix(key, prefix string) bool {
+	ke := strings.Split(key, "/")
+	pe := strings.Split(prefix, "/")
+	if len(ke) < len(pe) {
+		return false
+	}
+	for i := range pe {
+		if ke[i] != pe[i] {
+			return false
+		}
+	}
+	return true
+}
+
+func keyStripPrefix(key, prefix string) string {
+	ke := strings.Split(key, "/")
+	pe := strings.Split(prefix, "/")
+	if len(ke) < len(pe) {
+		return strings.Join(ke, "/")
+	}
+	for i := range pe {
+		if ke[i] != pe[i] {
+			return strings.Join(ke, "/")
+		}
+	}
+	return strings.Join(ke[len(pe):], "/")
 }
