@@ -16,10 +16,10 @@ import (
 )
 
 func main() {
-	app := kingpin.New("vault-backend-convert-consul-file",
-		"Convert Vault data from Consul KV format to file format.\n\n"+
+	app := kingpin.New("vault-convert-backend-consul-filesystem",
+		"Convert Vault data from a Consul storage backend to a filesystem storage backend.\n\n"+
 			"Input must be a JSON-serialised Consul KV tree.  Consul will output KV data in this format with 'consul kv export'.\n\n"+
-			"Output will be a filesystem tree.  The root of this tree may be loaded into Vault's file backend.\n\n"+
+			"Output will be a filesystem tree.  The root of this tree may be loaded into Vault's filesystem storage backend.\n\n"+
 			"Example:\n\n"+
 			"    consul kv export vault >vault.json\n"+
 			"    vault-backend-convert-consul-file vault.json backend\n").
