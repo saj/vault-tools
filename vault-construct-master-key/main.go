@@ -8,7 +8,7 @@ import (
 	"github.com/hashicorp/vault/shamir"
 	kingpin "gopkg.in/alecthomas/kingpin.v2"
 
-	"github.com/saj/vault-tools/util"
+	"github.com/saj/vault-tools/internal/util"
 )
 
 func main() {

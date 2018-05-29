@@ -12,7 +12,7 @@ import (
 	logxi "github.com/mgutz/logxi/v1"
 	kingpin "gopkg.in/alecthomas/kingpin.v2"
 
-	"github.com/saj/vault-tools/util"
+	"github.com/saj/vault-tools/internal/util"
 )
 
 func main() {
