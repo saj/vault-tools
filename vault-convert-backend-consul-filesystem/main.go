@@ -30,7 +30,7 @@ func main() {
 	inputPath := app.Arg("consul-input",
 		"Local filesystem path to an existing file that contains a JSON-serialised Consul KV export.").
 		Required().String()
-	outputPath := app.Arg("file-output",
+	outputPath := app.Arg("filesystem-output",
 		"Local filesystem path to the output directory.  The directory will be created if it does not exist.").
 		Required().String()
 
@@ -47,9 +47,9 @@ func main() {
 }
 
 type Converter struct {
-	input          io.ReadCloser
+	inputFile      io.ReadCloser
+	input          *json.Decoder
 	outputRootPath string
-	decoder        *json.Decoder
 	keyPrefix      string
 	count          uint64
 	firstErr       error
@@ -86,15 +86,15 @@ func NewConverter(inputPath, outputPath, consulPath string) (*Converter, error) 
 	}
 
 	return &Converter{
-		input:          f,
+		inputFile:      f,
+		input:          d,
 		outputRootPath: p,
-		decoder:        d,
 		keyPrefix:      keyPrefix,
 	}, nil
 }
 
 func (c *Converter) Close() error {
-	return c.input.Close()
+	return c.inputFile.Close()
 }
 
 func (c *Converter) ConvertAll() error {
@@ -104,42 +104,46 @@ func (c *Converter) ConvertAll() error {
 }
 
 func (c *Converter) Convert() bool {
-	if !c.decoder.More() {
+	if !c.input.More() {
 		return false
 	}
 	c.count++
 
-	consulEntry := &consul.Entry{}
-	if err := c.decoder.Decode(consulEntry); err != nil {
-		c.setErr(fmt.Errorf("input entry %d: %s", c.count, err))
-		return false
-	}
-
-	if !keyHasPrefix(consulEntry.Key, c.keyPrefix) {
-		// This data does not belong to Vault.  Skip silently.
-		return true
-	}
-
-	vaultEntry, err := convertEntry(consulEntry, c.keyPrefix)
-	if err != nil {
-		c.setErr(fmt.Errorf("input entry %d: %v", c.count, err))
-		return false
-	}
-
-	f, err := openFile(c.outputRootPath, vaultEntry.Key)
-	if err != nil {
-		c.setErr(fmt.Errorf("input entry %d: %v", c.count, err))
-		return false
-	}
-	defer f.Close()
-
-	enc := json.NewEncoder(f)
-	if err := enc.Encode(vaultEntry); err != nil {
-		c.setErr(fmt.Errorf("input entry %d: %v", c.count, err))
+	if err := c.convert(); err != nil {
+		c.setErr(fmt.Errorf("while processing input entry #%d: %s", c.count, err))
 		return false
 	}
 
 	return true
+}
+
+func (c *Converter) convert() error {
+	consulEntry := &consul.Entry{}
+	if err := c.input.Decode(consulEntry); err != nil {
+		return err
+	}
+
+	if !keyHasPrefix(consulEntry.Key, c.keyPrefix) {
+		// This data does not belong to Vault.  Skip silently.
+		return nil
+	}
+
+	vaultEntry, err := convertEntry(consulEntry, c.keyPrefix)
+	if err != nil {
+		return err
+	}
+
+	f, err := openFile(c.outputRootPath, vaultEntry.Key)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+
+	if err := json.NewEncoder(f).Encode(vaultEntry); err != nil {
+		return err
+	}
+
+	return nil
 }
 
 func (c *Converter) Err() error {
