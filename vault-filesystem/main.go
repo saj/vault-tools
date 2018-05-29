@@ -17,11 +17,11 @@ import (
 
 func main() {
 	var (
-		app = kingpin.New("vault-backend-file",
-			"Read data from a Vault file backend secured with an AES-GCM barrier.").
+		app = kingpin.New("vault-filesystem",
+			"Read data from a Vault filesystem storage backend.").
 			UsageTemplate(kingpin.CompactUsageTemplate)
 		path = app.Flag("backend-path",
-			"Local filesystem path to the Vault file backend root directory.").
+			"Local filesystem path to the Vault storage backend.  The backend must be secured with an AES-GCM barrier.  (At the time of writing, this was the only barrier type implemented in Vault 0.10.)").
 			Short('p').PlaceHolder("PATH").Required().String()
 		masterKeyPath = app.Flag("master-key-path",
 			"Local filesystem path to the Vault master key file.  The program will interactively prompt for the Vault master key if this flag is not supplied.  The Vault master key must be supplied as a base64 encoded string; vault-construct-master-key will output the Vault master key in this format.").
