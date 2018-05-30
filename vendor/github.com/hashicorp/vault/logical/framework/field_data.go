@@ -5,7 +5,9 @@ import (
 	"errors"
 	"fmt"
 	"regexp"
+	"strings"
 
+	"github.com/hashicorp/errwrap"
 	"github.com/hashicorp/vault/helper/parseutil"
 	"github.com/hashicorp/vault/helper/strutil"
 	"github.com/mitchellh/mapstructure"
@@ -34,14 +36,14 @@ func (d *FieldData) Validate() error {
 
 		switch schema.Type {
 		case TypeBool, TypeInt, TypeMap, TypeDurationSecond, TypeString,
-			TypeNameString, TypeSlice, TypeStringSlice, TypeCommaStringSlice:
+			TypeNameString, TypeSlice, TypeStringSlice, TypeCommaStringSlice,
+			TypeKVPairs, TypeCommaIntSlice:
 			_, _, err := d.getPrimitive(field, schema)
 			if err != nil {
-				return fmt.Errorf("Error converting input %v for field %s: %s", value, field, err)
+				return errwrap.Wrapf(fmt.Sprintf("error converting input %v for field %q: {{err}}", value, field), err)
 			}
 		default:
-			return fmt.Errorf("unknown field type %s for field %s",
-				schema.Type, field)
+			return fmt.Errorf("unknown field type %q for field %q", schema.Type, field)
 		}
 	}
 
@@ -105,21 +107,21 @@ func (d *FieldData) GetOk(k string) (interface{}, bool) {
 func (d *FieldData) GetOkErr(k string) (interface{}, bool, error) {
 	schema, ok := d.Schema[k]
 	if !ok {
-		return nil, false, fmt.Errorf("unknown field: %s", k)
+		return nil, false, fmt.Errorf("unknown field: %q", k)
 	}
 
 	switch schema.Type {
 	case TypeBool, TypeInt, TypeMap, TypeDurationSecond, TypeString,
-		TypeNameString, TypeSlice, TypeStringSlice, TypeCommaStringSlice:
+		TypeNameString, TypeSlice, TypeStringSlice, TypeCommaStringSlice,
+		TypeKVPairs, TypeCommaIntSlice:
 		return d.getPrimitive(k, schema)
 	default:
 		return nil, false,
-			fmt.Errorf("unknown field type %s for field %s", schema.Type, k)
+			fmt.Errorf("unknown field type %q for field %q", schema.Type, k)
 	}
 }
 
-func (d *FieldData) getPrimitive(
-	k string, schema *FieldSchema) (interface{}, bool, error) {
+func (d *FieldData) getPrimitive(k string, schema *FieldSchema) (interface{}, bool, error) {
 	raw, ok := d.Raw[k]
 	if !ok {
 		return nil, false, nil
@@ -206,6 +208,22 @@ func (d *FieldData) getPrimitive(
 		}
 		return result, true, nil
 
+	case TypeCommaIntSlice:
+		var result []int
+		config := &mapstructure.DecoderConfig{
+			Result:           &result,
+			WeaklyTypedInput: true,
+			DecodeHook:       mapstructure.StringToSliceHookFunc(","),
+		}
+		decoder, err := mapstructure.NewDecoder(config)
+		if err != nil {
+			return nil, true, err
+		}
+		if err := decoder.Decode(raw); err != nil {
+			return nil, true, err
+		}
+		return result, true, nil
+
 	case TypeSlice:
 		var result []interface{}
 		if err := mapstructure.WeakDecode(raw, &result); err != nil {
@@ -221,20 +239,34 @@ func (d *FieldData) getPrimitive(
 		return strutil.TrimStrings(result), true, nil
 
 	case TypeCommaStringSlice:
-		var result []string
-		config := &mapstructure.DecoderConfig{
-			Result:           &result,
-			WeaklyTypedInput: true,
-			DecodeHook:       mapstructure.StringToSliceHookFunc(","),
-		}
-		decoder, err := mapstructure.NewDecoder(config)
+		res, err := parseutil.ParseCommaStringSlice(raw)
 		if err != nil {
 			return nil, false, err
 		}
-		if err := decoder.Decode(raw); err != nil {
-			return nil, false, err
+		return res, true, nil
+
+	case TypeKVPairs:
+		// First try to parse this as a map
+		var mapResult map[string]string
+		if err := mapstructure.WeakDecode(raw, &mapResult); err == nil {
+			return mapResult, true, nil
 		}
-		return strutil.TrimStrings(result), true, nil
+
+		// If map parse fails, parse as a string list of = delimited pairs
+		var listResult []string
+		if err := mapstructure.WeakDecode(raw, &listResult); err != nil {
+			return nil, true, err
+		}
+
+		result := make(map[string]string, len(listResult))
+		for _, keyPair := range listResult {
+			keyPairSlice := strings.SplitN(keyPair, "=", 2)
+			if len(keyPairSlice) != 2 || keyPairSlice[0] == "" {
+				return nil, false, fmt.Errorf("invalid key pair %q", keyPair)
+			}
+			result[keyPairSlice[0]] = keyPairSlice[1]
+		}
+		return result, true, nil
 
 	default:
 		panic(fmt.Sprintf("Unknown type: %s", schema.Type))

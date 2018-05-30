@@ -12,13 +12,32 @@ import (
 	"net"
 	"runtime"
 	"strings"
-	"sync"
 	"time"
 )
 
 type unsetColumn struct{}
 
+// UnsetValue represents a value used in a query binding that will be ignored by Cassandra.
+//
+// By setting a field to the unset value Cassandra will ignore the write completely.
+// The main advantage is the ability to keep the same prepared statement even when you don't
+// want to update some fields, where before you needed to make another prepared statement.
+//
+// UnsetValue is only available when using the version 4 of the protocol.
 var UnsetValue = unsetColumn{}
+
+type namedValue struct {
+	name  string
+	value interface{}
+}
+
+// NamedValue produce a value which will bind to the named parameter in a query
+func NamedValue(name string, value interface{}) interface{} {
+	return &namedValue{
+		name:  name,
+		value: value,
+	}
+}
 
 const (
 	protoDirectionMask = 0x80
@@ -27,6 +46,7 @@ const (
 	protoVersion2      = 0x02
 	protoVersion3      = 0x03
 	protoVersion4      = 0x04
+	protoVersion5      = 0x05
 
 	maxFrameSize = 256 * 1024 * 1024
 )
@@ -183,45 +203,61 @@ func (c Consistency) String() string {
 	}
 }
 
-func ParseConsistency(s string) Consistency {
-	switch strings.ToUpper(s) {
+func (c Consistency) MarshalText() (text []byte, err error) {
+	return []byte(c.String()), nil
+}
+
+func (c *Consistency) UnmarshalText(text []byte) error {
+	switch string(text) {
 	case "ANY":
-		return Any
+		*c = Any
 	case "ONE":
-		return One
+		*c = One
 	case "TWO":
-		return Two
+		*c = Two
 	case "THREE":
-		return Three
+		*c = Three
 	case "QUORUM":
-		return Quorum
+		*c = Quorum
 	case "ALL":
-		return All
+		*c = All
 	case "LOCAL_QUORUM":
-		return LocalQuorum
+		*c = LocalQuorum
 	case "EACH_QUORUM":
-		return EachQuorum
+		*c = EachQuorum
 	case "LOCAL_ONE":
-		return LocalOne
+		*c = LocalOne
 	default:
-		panic("invalid consistency: " + s)
+		return fmt.Errorf("invalid consistency %q", string(text))
 	}
+
+	return nil
+}
+
+func ParseConsistency(s string) Consistency {
+	var c Consistency
+	if err := c.UnmarshalText([]byte(strings.ToUpper(s))); err != nil {
+		panic(err)
+	}
+	return c
 }
 
 // ParseConsistencyWrapper wraps gocql.ParseConsistency to provide an err
 // return instead of a panic
 func ParseConsistencyWrapper(s string) (consistency Consistency, err error) {
-	defer func() {
-		if r := recover(); r != nil {
-			var ok bool
-			err, ok = r.(error)
-			if !ok {
-				err = fmt.Errorf("ParseConsistencyWrapper: %v", r)
-			}
-		}
-	}()
-	consistency = ParseConsistency(s)
-	return consistency, nil
+	err = consistency.UnmarshalText([]byte(strings.ToUpper(s)))
+	return
+}
+
+// MustParseConsistency is the same as ParseConsistency except it returns
+// an error (never). It is kept here since breaking changes are not good.
+// DEPRECATED: use ParseConsistency if you want a panic on parse error.
+func MustParseConsistency(s string) (Consistency, error) {
+	c, err := ParseConsistencyWrapper(s)
+	if err != nil {
+		panic(err)
+	}
+	return c, nil
 }
 
 type SerialConsistency uint16
@@ -240,6 +276,23 @@ func (s SerialConsistency) String() string {
 	default:
 		return fmt.Sprintf("UNKNOWN_SERIAL_CONS_0x%x", uint16(s))
 	}
+}
+
+func (s SerialConsistency) MarshalText() (text []byte, err error) {
+	return []byte(s.String()), nil
+}
+
+func (s *SerialConsistency) UnmarshalText(text []byte) error {
+	switch string(text) {
+	case "SERIAL":
+		*s = Serial
+	case "LOCAL_SERIAL":
+		*s = LocalSerial
+	default:
+		return fmt.Errorf("invalid consistency %q", string(text))
+	}
+
+	return nil
 }
 
 const (
@@ -292,15 +345,6 @@ func (f frameHeader) Header() frameHeader {
 
 const defaultBufSize = 128
 
-var framerPool = sync.Pool{
-	New: func() interface{} {
-		return &framer{
-			wbuf:       make([]byte, defaultBufSize),
-			readBuffer: make([]byte, defaultBufSize),
-		}
-	},
-}
-
 // a framer is responsible for reading, writing and parsing frames on a single stream
 type framer struct {
 	r io.Reader
@@ -326,7 +370,10 @@ type framer struct {
 }
 
 func newFramer(r io.Reader, w io.Writer, compressor Compressor, version byte) *framer {
-	f := framerPool.Get().(*framer)
+	f := &framer{
+		wbuf:       make([]byte, defaultBufSize),
+		readBuffer: make([]byte, defaultBufSize),
+	}
 	var flags byte
 	if compressor != nil {
 		flags |= flagCompress
@@ -709,13 +756,9 @@ func (w writeStartupFrame) String() string {
 	return fmt.Sprintf("[startup opts=%+v]", w.opts)
 }
 
-func (w *writeStartupFrame) writeFrame(framer *framer, streamID int) error {
-	return framer.writeStartupFrame(streamID, w.opts)
-}
-
-func (f *framer) writeStartupFrame(streamID int, options map[string]string) error {
+func (w *writeStartupFrame) writeFrame(f *framer, streamID int) error {
 	f.writeHeader(f.flags&^flagCompress, opStartup, streamID)
-	f.writeStringMap(options)
+	f.writeStringMap(w.opts)
 
 	return f.finishWrite()
 }
@@ -724,13 +767,9 @@ type writePrepareFrame struct {
 	statement string
 }
 
-func (w *writePrepareFrame) writeFrame(framer *framer, streamID int) error {
-	return framer.writePrepareFrame(streamID, w.statement)
-}
-
-func (f *framer) writePrepareFrame(stream int, statement string) error {
-	f.writeHeader(f.flags, opPrepare, stream)
-	f.writeLongString(statement)
+func (w *writePrepareFrame) writeFrame(f *framer, streamID int) error {
+	f.writeHeader(f.flags, opPrepare, streamID)
+	f.writeLongString(w.statement)
 	return f.finishWrite()
 }
 
@@ -830,7 +869,7 @@ func (f *framer) parsePreparedMetadata() preparedMetadata {
 	}
 
 	if meta.flags&flagHasMorePages == flagHasMorePages {
-		meta.pagingState = f.readBytes()
+		meta.pagingState = copyBytes(f.readBytes())
 	}
 
 	if meta.flags&flagNoMetaData == flagNoMetaData {
@@ -915,7 +954,7 @@ func (f *framer) parseResultMetadata() resultMetadata {
 	meta.actualColCount = meta.colCount
 
 	if meta.flags&flagHasMorePages == flagHasMorePages {
-		meta.pagingState = f.readBytes()
+		meta.pagingState = copyBytes(f.readBytes())
 	}
 
 	if meta.flags&flagNoMetaData == flagNoMetaData {
@@ -1066,7 +1105,24 @@ func (f schemaChangeTable) String() string {
 	return fmt.Sprintf("[event schema_change change=%q keyspace=%q object=%q]", f.change, f.keyspace, f.object)
 }
 
+type schemaChangeType struct {
+	frameHeader
+
+	change   string
+	keyspace string
+	object   string
+}
+
 type schemaChangeFunction struct {
+	frameHeader
+
+	change   string
+	keyspace string
+	name     string
+	args     []string
+}
+
+type schemaChangeAggregate struct {
 	frameHeader
 
 	change   string
@@ -1110,7 +1166,7 @@ func (f *framer) parseResultSchemaChange() frame {
 			frame.keyspace = f.readString()
 
 			return frame
-		case "TABLE", "TYPE":
+		case "TABLE":
 			frame := &schemaChangeTable{
 				frameHeader: *f.header,
 				change:      change,
@@ -1120,8 +1176,29 @@ func (f *framer) parseResultSchemaChange() frame {
 			frame.object = f.readString()
 
 			return frame
-		case "FUNCTION", "AGGREGATE":
+		case "TYPE":
+			frame := &schemaChangeType{
+				frameHeader: *f.header,
+				change:      change,
+			}
+
+			frame.keyspace = f.readString()
+			frame.object = f.readString()
+
+			return frame
+		case "FUNCTION":
 			frame := &schemaChangeFunction{
+				frameHeader: *f.header,
+				change:      change,
+			}
+
+			frame.keyspace = f.readString()
+			frame.name = f.readString()
+			frame.args = f.readStringList()
+
+			return frame
+		case "AGGREGATE":
+			frame := &schemaChangeAggregate{
 				frameHeader: *f.header,
 				change:      change,
 			}
@@ -1471,10 +1548,13 @@ func (f *framer) writeBatchFrame(streamID int, w *writeBatchFrame) error {
 
 		f.writeShort(uint16(len(b.values)))
 		for j := range b.values {
-			col := &b.values[j]
+			col := b.values[j]
 			if f.proto > protoVersion2 && col.name != "" {
 				// TODO: move this check into the caller and set a flag on writeBatchFrame
 				// to indicate using named values
+				if f.proto <= protoVersion5 {
+					return fmt.Errorf("gocql: named query values are not supported in batches, please see https://issues.apache.org/jira/browse/CASSANDRA-10246")
+				}
 				flags |= flagWithNameValues
 				f.writeString(col.name)
 			}
@@ -1694,7 +1774,7 @@ func (f *framer) readConsistency() Consistency {
 
 func (f *framer) readStringMap() map[string]string {
 	size := f.readShort()
-	m := make(map[string]string)
+	m := make(map[string]string, size)
 
 	for i := 0; i < int(size); i++ {
 		k := f.readString()
@@ -1707,7 +1787,7 @@ func (f *framer) readStringMap() map[string]string {
 
 func (f *framer) readBytesMap() map[string][]byte {
 	size := f.readShort()
-	m := make(map[string][]byte)
+	m := make(map[string][]byte, size)
 
 	for i := 0; i < int(size); i++ {
 		k := f.readString()
@@ -1720,7 +1800,7 @@ func (f *framer) readBytesMap() map[string][]byte {
 
 func (f *framer) readStringMultiMap() map[string][]string {
 	size := f.readShort()
-	m := make(map[string][]string)
+	m := make(map[string][]string, size)
 
 	for i := 0; i < int(size); i++ {
 		k := f.readString()

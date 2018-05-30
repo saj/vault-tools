@@ -1,23 +1,26 @@
 package main
 
 import (
+	"context"
 	"encoding/hex"
 	"fmt"
 	"io/ioutil"
 	"os"
 
+	hclog "github.com/hashicorp/go-hclog"
 	"github.com/hashicorp/vault/helper/compressutil"
 	"github.com/hashicorp/vault/physical/file"
 	"github.com/hashicorp/vault/vault"
-	logxi "github.com/mgutz/logxi/v1"
 	kingpin "gopkg.in/alecthomas/kingpin.v2"
 
 	"github.com/saj/vault-tools/internal/util"
 )
 
+const progname = "vault-filesystem"
+
 func main() {
 	var (
-		app = kingpin.New("vault-filesystem",
+		app = kingpin.New(progname,
 			"Read data from a Vault filesystem storage backend.").
 			UsageTemplate(kingpin.CompactUsageTemplate)
 		path = app.Flag("backend-path",
@@ -37,6 +40,9 @@ func main() {
 	)
 
 	cmd := kingpin.MustParse(app.Parse(os.Args[1:]))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 
 	var masterKey []byte
 	if *masterKeyPath != "" {
@@ -60,26 +66,26 @@ func main() {
 		if err != nil {
 			app.Fatalf("%v", err)
 		}
-		if err := barrier.Unseal(masterKey); err != nil {
+		if err := barrier.Unseal(ctx, masterKey); err != nil {
 			app.Fatalf("%v", err)
 		}
 	}
 
 	switch cmd {
 	case listCmd.FullCommand():
-		if err := list(barrier, *listPrefix); err != nil {
+		if err := list(ctx, barrier, *listPrefix); err != nil {
 			app.Fatalf("%v", err)
 		}
 
 	case readCmd.FullCommand():
-		if err := read(barrier, *readKey, *readDecompress, *readVerbatim); err != nil {
+		if err := read(ctx, barrier, *readKey, *readDecompress, *readVerbatim); err != nil {
 			app.Fatalf("%v", err)
 		}
 	}
 }
 
-func list(barrier *vault.AESGCMBarrier, prefix string) error {
-	keys, err := barrier.List(prefix)
+func list(ctx context.Context, barrier *vault.AESGCMBarrier, prefix string) error {
+	keys, err := barrier.List(ctx, prefix)
 	if err != nil {
 		return err
 	}
@@ -89,8 +95,8 @@ func list(barrier *vault.AESGCMBarrier, prefix string) error {
 	return nil
 }
 
-func read(barrier *vault.AESGCMBarrier, key string, decompress, verbatim bool) error {
-	entry, err := barrier.Get(key)
+func read(ctx context.Context, barrier *vault.AESGCMBarrier, key string, decompress, verbatim bool) error {
+	entry, err := barrier.Get(ctx, key)
 	if err != nil {
 		return err
 	}
@@ -120,10 +126,12 @@ func read(barrier *vault.AESGCMBarrier, key string, decompress, verbatim bool) e
 }
 
 func openBarrier(backendPath string) (*vault.AESGCMBarrier, error) {
-	logger := logxi.New("vault")
+	logger := hclog.New(&hclog.LoggerOptions{
+		Name:  progname,
+		Level: hclog.LevelFromString("INFO"),
+	})
 
-	conf := make(map[string]string)
-	conf["path"] = backendPath
+	conf := map[string]string{"path": backendPath}
 
 	backend, err := file.NewFileBackend(conf, logger)
 	if err != nil {

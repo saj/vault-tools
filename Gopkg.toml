@@ -1,5 +1,6 @@
 [prune]
   go-tests = true
+  non-go = true
   unused-packages = true
 
 [[constraint]]
@@ -8,11 +9,7 @@
 
 [[constraint]]
   name = "github.com/hashicorp/vault"
-  version = "0.8.2"
-
-[[constraint]]
-  name = "github.com/mgutz/logxi"
-  version = "1.0.0"
+  version = "0.10.1"
 
 [[constraint]]
   name = "gopkg.in/alecthomas/kingpin.v2"

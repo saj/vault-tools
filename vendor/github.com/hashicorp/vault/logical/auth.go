@@ -49,12 +49,26 @@ type Auth struct {
 	// specified by this period.
 	Period time.Duration `json:"period" mapstructure:"period" structs:"period"`
 
+	// ExplicitMaxTTL is the max TTL that constrains periodic tokens. For normal
+	// tokens, this value is constrained by the configured max ttl.
+	ExplicitMaxTTL time.Duration `json:"-" mapstructure:"-" structs:"-"`
+
 	// Number of allowed uses of the issued token
 	NumUses int `json:"num_uses" mapstructure:"num_uses" structs:"num_uses"`
 
-	// Persona is the information about the authenticated client returned by
+	// EntityID is the identifier of the entity in identity store to which the
+	// identity of the authenticating client belongs to.
+	EntityID string `json:"entity_id" mapstructure:"entity_id" structs:"entity_id"`
+
+	// Alias is the information about the authenticated client returned by
 	// the auth backend
-	Persona *Persona `json:"persona" structs:"persona" mapstructure:"persona"`
+	Alias *Alias `json:"alias" mapstructure:"alias" structs:"alias"`
+
+	// GroupAliases are the informational mappings of external groups which an
+	// authenticated user belongs to. This is used to check if there are
+	// mappings groups for the group aliases in identity store. For all the
+	// matching groups, the entity ID of the user will be added.
+	GroupAliases []*Alias `json:"group_aliases" mapstructure:"group_aliases" structs:"group_aliases"`
 }
 
 func (a *Auth) GoString() string {
