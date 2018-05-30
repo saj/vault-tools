@@ -30,10 +30,10 @@ func main() {
 		listCmd    = app.Command("list", "List keys.")
 		listPrefix = listCmd.Arg("prefix", "").Required().String()
 
-		getCmd        = app.Command("get", "Read key data.  Data will be written to standard output as a formatted hexdump.")
-		getKey        = getCmd.Arg("key", "").Required().String()
-		getDecompress = getCmd.Flag("decompress", "Attempt to decompress data prior to output.  Enabled by default; use --no-decompress to disable.").Default("true").Bool()
-		getVerbatim   = getCmd.Flag("verbatim", "Omit hexdump; write data byte-for-byte to standard output.").Bool()
+		readCmd        = app.Command("read", "Read and decrypt data from the Vault barrier.  Data will be written to standard output as a formatted hexdump.")
+		readKey        = readCmd.Arg("key", "").Required().String()
+		readDecompress = readCmd.Flag("decompress", "Attempt to decompress data prior to output.  Enabled by default; use --no-decompress to disable.").Default("true").Bool()
+		readVerbatim   = readCmd.Flag("verbatim", "Omit hexdump; write data byte-for-byte to standard output.").Bool()
 	)
 
 	cmd := kingpin.MustParse(app.Parse(os.Args[1:]))
@@ -71,8 +71,8 @@ func main() {
 			app.Fatalf("%v", err)
 		}
 
-	case getCmd.FullCommand():
-		if err := get(barrier, *getKey, *getDecompress, *getVerbatim); err != nil {
+	case readCmd.FullCommand():
+		if err := read(barrier, *readKey, *readDecompress, *readVerbatim); err != nil {
 			app.Fatalf("%v", err)
 		}
 	}
@@ -89,7 +89,7 @@ func list(barrier *vault.AESGCMBarrier, prefix string) error {
 	return nil
 }
 
-func get(barrier *vault.AESGCMBarrier, key string, decompress, verbatim bool) error {
+func read(barrier *vault.AESGCMBarrier, key string, decompress, verbatim bool) error {
 	entry, err := barrier.Get(key)
 	if err != nil {
 		return err
@@ -112,7 +112,9 @@ func get(barrier *vault.AESGCMBarrier, key string, decompress, verbatim bool) er
 	if verbatim {
 		os.Stdout.Write(value)
 	} else {
-		fmt.Print(hex.Dump(value))
+		d := hex.Dumper(os.Stdout)
+		defer d.Close()
+		d.Write(value)
 	}
 	return nil
 }
