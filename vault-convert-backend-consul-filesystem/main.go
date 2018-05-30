@@ -1,22 +1,26 @@
 package main
 
 import (
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
 	"os"
 	"path"
-	"path/filepath"
 	"strings"
 
 	consul "github.com/hashicorp/consul/command/kv/impexp"
+	hclog "github.com/hashicorp/go-hclog"
 	vault "github.com/hashicorp/vault/physical"
+	"github.com/hashicorp/vault/physical/file"
 	kingpin "gopkg.in/alecthomas/kingpin.v2"
 )
 
+const progname = "vault-convert-backend-consul-filesystem"
+
 func main() {
-	app := kingpin.New("vault-convert-backend-consul-filesystem",
+	app := kingpin.New(progname,
 		"Convert Vault data from a Consul storage backend to a filesystem storage backend.\n\n"+
 			"Input must be a JSON-serialised Consul KV tree.  Consul will output KV data in this format with 'consul kv export'.\n\n"+
 			"Output will be a filesystem tree.  The root of this tree may be loaded into Vault's filesystem storage backend.\n\n"+
@@ -36,140 +40,149 @@ func main() {
 
 	kingpin.MustParse(app.Parse(os.Args[1:]))
 
-	c, err := NewConverter(*inputPath, *outputPath, *consulPath)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	if err := convert(ctx, *inputPath, *outputPath, *consulPath); err != nil {
+		app.Fatalf("%v", err)
+	}
+}
+
+func convert(ctx context.Context, inputPath, outputPath, consulPath string) (err error) {
+	cb, openError := openConsulBackend(inputPath, consulPath)
+	if openError != nil {
+		return openError
+	}
+	defer func() {
+		if closeError := cb.Close(); closeError != nil && err == nil {
+			err = closeError
+		}
+	}()
+
+	fb, openError := openFilesystemBackend(outputPath)
+	if openError != nil {
+		return openError
+	}
+	defer func() {
+		if closeError := fb.Close(); closeError != nil && err == nil {
+			err = closeError
+		}
+	}()
+
+conversion:
+	for {
+		ce, readError := cb.ReadEntry()
+		if readError != nil {
+			if readError == io.EOF {
+				break conversion
+			}
+			return readError
+		}
+
+		ve, conversionError := convertEntry(ce, consulPath)
+		if conversionError != nil {
+			return conversionError
+		}
+
+		if writeError := fb.WriteEntry(ctx, ve); writeError != nil {
+			return writeError
+		}
+	}
+	return nil
+}
+
+type filesystemBackend struct {
+	backend vault.Backend
+}
+
+func openFilesystemBackend(backendPath string) (*filesystemBackend, error) {
+	logger := hclog.New(&hclog.LoggerOptions{
+		Name:  progname,
+		Level: hclog.LevelFromString("INFO"),
+	})
+
+	conf := map[string]string{"path": backendPath}
+
+	backend, err := file.NewFileBackend(conf, logger)
 	if err != nil {
-		app.Fatalf("%v", err)
+		return nil, err
 	}
-	defer c.Close() // nolint: errcheck
-	if err := c.ConvertAll(); err != nil {
-		app.Fatalf("%v", err)
-	}
+
+	return &filesystemBackend{backend: backend}, nil
 }
 
-type Converter struct {
-	inputFile      io.ReadCloser
-	input          *json.Decoder
-	outputRootPath string
-	keyPrefix      string
-	count          uint64
-	firstError     error
+func (be *filesystemBackend) Close() error {
+	return nil
 }
 
-func NewConverter(inputPath, outputPath, consulPath string) (*Converter, error) {
+func (be *filesystemBackend) WriteEntry(ctx context.Context, entry *vault.Entry) error {
+	return be.backend.Put(ctx, entry)
+}
+
+type consulBackend struct {
+	file      io.ReadCloser
+	decoder   *json.Decoder
+	keyPrefix string
+}
+
+func openConsulBackend(backendPath, consulPath string) (*consulBackend, error) {
 	keyPrefix := path.Clean(consulPath)
 	if keyPrefix == "/" || keyPrefix == "." {
 		return nil, fmt.Errorf("invalid Consul path: %v", consulPath)
 	}
 
-	p := filepath.Clean(outputPath)
-	if err := os.MkdirAll(p, 0700); err != nil {
-		return nil, err
-	}
-	if err := os.Chmod(p, 0700); err != nil {
-		return nil, err
-	}
-
-	f, err := os.Open(inputPath)
+	f, err := os.Open(backendPath)
 	if err != nil {
 		return nil, err
 	}
 
-	d := json.NewDecoder(f)
-	t, err := d.Token()
-	if err != nil {
+	be := &consulBackend{
+		file:      f,
+		decoder:   json.NewDecoder(f),
+		keyPrefix: keyPrefix,
+	}
+
+	if err := be.eatHeader(); err != nil {
 		f.Close() // nolint: errcheck
 		return nil, err
+	}
+	return be, nil
+}
+
+func (be *consulBackend) Close() error {
+	return be.file.Close()
+}
+
+func (be *consulBackend) ReadEntry() (*consul.Entry, error) {
+	entry := &consul.Entry{}
+scan:
+	for {
+		if !be.decoder.More() {
+			return nil, io.EOF
+		}
+
+		if err := be.decoder.Decode(entry); err != nil {
+			return nil, err
+		}
+
+		if keyHasPrefix(entry.Key, be.keyPrefix) {
+			break scan
+		}
+	}
+	return entry, nil
+}
+
+// eatHeader positions a new file cursor at the start of the key-value object
+// sequence.
+func (be *consulBackend) eatHeader() error {
+	t, err := be.decoder.Token()
+	if err != nil {
+		return err
 	}
 	if t != json.Delim('[') {
-		f.Close() // nolint: errcheck
-		return nil, fmt.Errorf("expected JSON token: '[', got: %s", t)
+		return fmt.Errorf("expected JSON token: '[', got: %s", t)
 	}
-
-	return &Converter{
-		inputFile:      f,
-		input:          d,
-		outputRootPath: p,
-		keyPrefix:      keyPrefix,
-	}, nil
-}
-
-func (c *Converter) Close() error {
-	return c.inputFile.Close()
-}
-
-func (c *Converter) ConvertAll() error {
-	for c.Convert() {
-	}
-	return c.Err()
-}
-
-func (c *Converter) Convert() bool {
-	if !c.input.More() {
-		return false
-	}
-	c.count++
-
-	if err := c.convert(); err != nil {
-		c.setError(fmt.Errorf("while processing input entry #%d: %s", c.count, err))
-		return false
-	}
-
-	return true
-}
-
-func (c *Converter) convert() (err error) {
-	consulEntry := &consul.Entry{}
-	if err = c.input.Decode(consulEntry); err != nil {
-		return
-	}
-
-	if !keyHasPrefix(consulEntry.Key, c.keyPrefix) {
-		// This data does not belong to Vault.  Skip silently.
-		return nil
-	}
-
-	var vaultEntry *vault.Entry
-	vaultEntry, err = convertEntry(consulEntry, c.keyPrefix)
-	if err != nil {
-		return
-	}
-
-	var f io.WriteCloser
-	f, err = openFile(c.outputRootPath, vaultEntry.Key)
-	if err != nil {
-		return
-	}
-	defer func() {
-		if closeError := f.Close(); closeError != nil && err == nil {
-			err = closeError
-		}
-	}()
-
-	return json.NewEncoder(f).Encode(vaultEntry)
-}
-
-func (c *Converter) Err() error {
-	return c.firstError
-}
-
-func (c *Converter) setError(err error) {
-	if c.firstError == nil {
-		c.firstError = err
-	}
-}
-
-func openFile(root, key string) (*os.File, error) {
-	kdir, kbase := path.Split(key)
-	// Vault's file backend expects files to be named with a leading underscore.
-	p := filepath.Join(root, kdir, "_"+kbase)
-	if err := os.MkdirAll(filepath.Dir(p), 0700); err != nil {
-		return nil, err
-	}
-	f, err := os.OpenFile(p, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0600)
-	if err != nil {
-		return nil, err
-	}
-	return f, nil
+	return nil
 }
 
 func convertEntry(entry *consul.Entry, keyPrefix string) (*vault.Entry, error) {
