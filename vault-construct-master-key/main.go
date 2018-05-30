@@ -42,7 +42,7 @@ func promptForKeyShares(numShares uint) ([][]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer t.Restore()
+	defer t.Restore() // nolint: errcheck
 
 	keyShares := make([][]byte, numShares)
 	for i := 0; i < int(numShares); i++ {

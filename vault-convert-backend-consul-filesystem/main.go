@@ -52,7 +52,7 @@ type Converter struct {
 	outputRootPath string
 	keyPrefix      string
 	count          uint64
-	firstErr       error
+	firstError     error
 }
 
 func NewConverter(inputPath, outputPath, consulPath string) (*Converter, error) {
@@ -110,17 +110,17 @@ func (c *Converter) Convert() bool {
 	c.count++
 
 	if err := c.convert(); err != nil {
-		c.setErr(fmt.Errorf("while processing input entry #%d: %s", c.count, err))
+		c.setError(fmt.Errorf("while processing input entry #%d: %s", c.count, err))
 		return false
 	}
 
 	return true
 }
 
-func (c *Converter) convert() error {
+func (c *Converter) convert() (err error) {
 	consulEntry := &consul.Entry{}
-	if err := c.input.Decode(consulEntry); err != nil {
-		return err
+	if err = c.input.Decode(consulEntry); err != nil {
+		return
 	}
 
 	if !keyHasPrefix(consulEntry.Key, c.keyPrefix) {
@@ -128,31 +128,33 @@ func (c *Converter) convert() error {
 		return nil
 	}
 
-	vaultEntry, err := convertEntry(consulEntry, c.keyPrefix)
+	var vaultEntry *vault.Entry
+	vaultEntry, err = convertEntry(consulEntry, c.keyPrefix)
 	if err != nil {
-		return err
+		return
 	}
 
-	f, err := openFile(c.outputRootPath, vaultEntry.Key)
+	var f io.WriteCloser
+	f, err = openFile(c.outputRootPath, vaultEntry.Key)
 	if err != nil {
-		return err
+		return
 	}
-	defer f.Close()
+	defer func() {
+		if closeError := f.Close(); closeError != nil && err == nil {
+			err = closeError
+		}
+	}()
 
-	if err := json.NewEncoder(f).Encode(vaultEntry); err != nil {
-		return err
-	}
-
-	return nil
+	return json.NewEncoder(f).Encode(vaultEntry)
 }
 
 func (c *Converter) Err() error {
-	return c.firstErr
+	return c.firstError
 }
 
-func (c *Converter) setErr(err error) {
-	if c.firstErr == nil {
-		c.firstErr = err
+func (c *Converter) setError(err error) {
+	if c.firstError == nil {
+		c.firstError = err
 	}
 }
 

@@ -50,7 +50,7 @@ type Converter struct {
 	output     *bufio.Writer
 	keyPrefix  string
 	count      uint64
-	firstErr   error
+	firstError error
 }
 
 func NewConverter(inputPath, outputPath, consulPath string) (*Converter, error) {
@@ -88,13 +88,13 @@ func (c *Converter) ConvertAll() error {
 func (c *Converter) Convert() bool {
 	datum, err := c.walker.Next()
 	if err != nil {
-		c.setErr(err)
+		c.setError(err)
 		return false
 	}
 	if datum == nil {
 		trailer := "\n]\n"
 		if _, err := c.output.WriteString(trailer); err != nil {
-			c.setErr(err)
+			c.setError(err)
 		}
 		return false
 	}
@@ -107,12 +107,12 @@ func (c *Converter) Convert() bool {
 		header = ",\n\t"
 	}
 	if _, err := c.output.WriteString(header); err != nil {
-		c.setErr(err)
+		c.setError(err)
 		return false
 	}
 
 	if err := c.convert(datum); err != nil {
-		c.setErr(fmt.Errorf("while processing input entry #%d: %v", c.count, err))
+		c.setError(fmt.Errorf("while processing input entry #%d: %v", c.count, err))
 		return false
 	}
 
@@ -120,11 +120,11 @@ func (c *Converter) Convert() bool {
 }
 
 func (c *Converter) convert(datum *WalkResult) error {
-	f, err := os.Open(datum.Path)
-	if err != nil {
-		return err
+	f, openError := os.Open(datum.Path)
+	if openError != nil {
+		return openError
 	}
-	defer f.Close()
+	defer f.Close() // nolint: errcheck
 
 	vaultEntry := &vault.Entry{}
 	if err := json.NewDecoder(f).Decode(&vaultEntry); err != nil {
@@ -133,9 +133,9 @@ func (c *Converter) convert(datum *WalkResult) error {
 
 	consulEntry := convertEntry(vaultEntry, c.keyPrefix)
 
-	compacted, err := json.Marshal(consulEntry)
-	if err != nil {
-		return err
+	compacted, marshalError := json.Marshal(consulEntry)
+	if marshalError != nil {
+		return marshalError
 	}
 
 	indented := &bytes.Buffer{}
@@ -151,12 +151,12 @@ func (c *Converter) convert(datum *WalkResult) error {
 }
 
 func (c *Converter) Err() error {
-	return c.firstErr
+	return c.firstError
 }
 
-func (c *Converter) setErr(err error) {
-	if c.firstErr == nil {
-		c.firstErr = err
+func (c *Converter) setError(err error) {
+	if c.firstError == nil {
+		c.firstError = err
 	}
 }
 

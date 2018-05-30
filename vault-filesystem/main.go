@@ -138,11 +138,17 @@ func read(ctx context.Context, barrier *vault.AESGCMBarrier, key string, decompr
 	}
 
 	if verbatim {
-		os.Stdout.Write(value)
+		if _, err := os.Stdout.Write(value); err != nil {
+			return err
+		}
 	} else {
 		d := hex.Dumper(os.Stdout)
-		defer d.Close()
-		d.Write(value)
+		if _, err := d.Write(value); err != nil {
+			return err
+		}
+		if err := d.Close(); err != nil {
+			return err
+		}
 	}
 	return nil
 }
@@ -187,7 +193,7 @@ func promptForMasterKey() ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer t.Restore()
+	defer t.Restore() // nolint: errcheck
 
 	return t.ReadKeyBase64("Enter master key: ")
 }
