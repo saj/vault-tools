@@ -43,6 +43,13 @@ func main() {
 		writeKey      = writeCmd.Arg("key", "").Required().String()
 		writeData     = writeCmd.Flag("data", "Do not read data from standard input.  --data foo will write the string 'foo' to the Vault barrier.  --data @foo will write the contents of the file named 'foo' to the Vault barrier.").String()
 		writeCompress = writeCmd.Flag("compress", "Compress data before writing to the Vault barrier.").Bool()
+
+		deleteCmd = app.Command("delete",
+			"Delete a key from the Vault barrier.\n\n"+
+				"The following caveats apply due to the design and/or implementation of the Vault filesystem backend:\n"+
+				"  - This command is unable to recursively remove subtrees from the Vault barrier.  Any attempt to remove a subtree will no-op, successfully.\n"+
+				"  - Any attempt to remove a non-existent key will no-op, successfully.\n\n")
+		deleteKey = deleteCmd.Arg("key", "").Required().String()
 	)
 
 	cmd := kingpin.MustParse(app.Parse(os.Args[1:]))
@@ -101,6 +108,11 @@ func main() {
 		}
 
 		if err := write(ctx, barrier, *writeKey, value, *writeCompress); err != nil {
+			app.Fatalf("%v", err)
+		}
+
+	case deleteCmd.FullCommand():
+		if err := barrier.Delete(ctx, *deleteKey); err != nil {
 			app.Fatalf("%v", err)
 		}
 	}
